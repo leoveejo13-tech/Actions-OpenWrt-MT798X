@@ -89,7 +89,6 @@ UPDATE_PACKAGE "lucky" "gdy666/luci-app-lucky" "main"   #lucky 大吉
 UPDATE_PACKAGE "vnt" "lmq8267/luci-app-vnt" "main"
 UPDATE_PACKAGE "qmodem" "FUjr/QModem" "main"
 
-UPDATE_PACKAGE "istore" "linkease/istore" "main"
 #更新软件包版本
 UPDATE_VERSION() {
 	local PKG_NAME=$1
