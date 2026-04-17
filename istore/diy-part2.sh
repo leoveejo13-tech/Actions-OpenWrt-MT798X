@@ -160,13 +160,29 @@ if [ -n "$OPENLIST2_DIR" ]; then
     echo "✅ OpenList2 菜单已移动到 NAS"
 fi
 
-#修复Rust编译失败
+# 修复Rust编译失败
 RUST_FILE=$(find ../feeds/packages -path "*/lang/rust/Makefile" | head -n 1)
 
 if [ -n "$RUST_FILE" ] && [ -f "$RUST_FILE" ]; then
     sed -i 's/ci-llvm=true/ci-llvm=false/g' "$RUST_FILE"
     echo "Rust local LLVM build enabled!"
 fi
+
+#  修复 eBPF 内核依赖 (解决 act_bpf.ko missing 报错)
+echo ">>> [Kernel] 正在强制打通 eBPF/Daed 内核编译参数..."
+# 向 OpenWrt .config 强行注入内核参数
+cat >> .config <<EOF
+# 开启 BPF 系统调用 (eBPF 核心大门)
+CONFIG_KERNEL_BPF_SYSCALL=y
+# 开启 BPF JIT 编译器 (极大提升 eBPF 性能)
+CONFIG_KERNEL_BPF_JIT=y
+CONFIG_KERNEL_CGROUP_BPF=y
+CONFIG_KERNEL_BPF_EVENTS=y
+# 开启流量控制核心支持 (act_bpf 所需)
+CONFIG_KERNEL_NET_CLS_ACT=y
+CONFIG_KERNEL_NET_CLS_BPF=m
+CONFIG_KERNEL_NET_ACT_BPF=m
+EOF
 
 # 修改默认 IP (192.168.30.1)
 sed -i 's/192.168.6.1/192.168.30.1/g' package/base-files/files/bin/config_generate
