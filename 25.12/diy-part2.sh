@@ -170,15 +170,7 @@ if [ -f "$RUST_FILE" ]; then
 	cd $PKG_PATH && echo "rust has been fixed!"
 fi
 
-# ---------------------------------------------------------
-# 8. 系统收尾工作
-# ---------------------------------------------------------
+# 修改默认 IP (192.168.30.1)
 sed -i 's/192.168.6.1/192.168.30.1/g' package/base-files/files/bin/config_generate
 
-if [ -f feeds.conf.default.bak ]; then
-    mv feeds.conf.default.bak feeds.conf.default
-fi
-
-rm -f feeds.conf
-
-echo "✅ 执行自定义优化脚本 (diy-part2.sh) 收尾完成。"
+echo "✅ SSH2 配置完成。"
