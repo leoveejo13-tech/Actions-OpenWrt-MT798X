@@ -10,6 +10,99 @@ echo "执行自定义优化脚本 (diy-part2.sh)"
 echo "=========================================="
 
 # ---------------------------------------------------------
+# 1. 环境路径识别与安全兜底
+# ---------------------------------------------------------
+TARGET_DIR="${1:-$(pwd)}"
+
+check_openwrt_root() {
+    [ -f "$1/scripts/feeds" ] && [ -f "$1/Makefile" ]
+}
+
+if check_openwrt_root "$TARGET_DIR"; then
+    OPENWRT_ROOT="$TARGET_DIR"
+    echo "✅ 自动识别 OpenWrt 根目录: $OPENWRT_ROOT"
+else
+    SUB_DIR=$(find . -maxdepth 2 -name "scripts" -type d | head -n 1 | xargs dirname 2>/dev/null)
+    if [ -n "$SUB_DIR" ] && check_openwrt_root "$SUB_DIR"; then
+        OPENWRT_ROOT="$(realpath "$SUB_DIR")"
+        echo "✅ 在子目录找到 OpenWrt 根目录: $OPENWRT_ROOT"
+    else
+        # 强制兜底为当前目录，防止变量为空导致后续 rm -rf 出事故
+        OPENWRT_ROOT=$(pwd)
+        echo "⚠️ 警告: 未能智能识别，强制设定根目录为当前目录: $OPENWRT_ROOT"
+    fi
+fi
+
+# ---------------------------------------------------------
+# 3. QuickStart 首页温度显示修复
+# ---------------------------------------------------------
+# 下载 istore
+git clone --depth=1 https://github.com/linkease/istore  package/istore
+git clone --depth=1 https://github.com/linkease/nas-packages  package/nas
+git clone --depth=1 https://github.com/linkease/nas-packages-luci  package/nas-luci
+
+echo ">>> 执行 QuickStart 修复..."
+# 获取 GitHub Workspace 根目录 (diy-part2.sh 在 openwrt/ 下运行)
+REPO_ROOT=$(dirname "$(readlink -f "$0")")/.. 
+# 如果在 Actions 环境中，直接使用环境变量更稳
+if [ -n "$GITHUB_WORKSPACE" ]; then
+    REPO_ROOT="$GITHUB_WORKSPACE"
+fi
+
+CUSTOM_LUA="$REPO_ROOT/istore/istore_backend.lua"
+# 查找目标文件 (feeds 和 package 都找)
+TARGET_LUA=$(find feeds package -name "istore_backend.lua" -type f 2>/dev/null | head -n 1)
+
+if [ -n "$TARGET_LUA" ]; then
+    echo "定位到目标文件: $TARGET_LUA"
+    if [ -f "$CUSTOM_LUA" ]; then
+        echo "正在覆盖自定义文件..."
+        cp -f "$CUSTOM_LUA" "$TARGET_LUA"
+        if cmp -s "$CUSTOM_LUA" "$TARGET_LUA"; then
+             echo "✅ QuickStart 修复成功"
+        else
+             echo "❌ 错误: 文件复制校验失败"
+        fi
+    else
+        echo "⚠️ 警告: 仓库中未找到自定义文件 $CUSTOM_LUA"
+    fi
+else
+    echo "⚠️ 警告: 未在源码中找到 istore_backend.lua，跳过修复"
+fi
+
+# 升级替换 mosdns
+# drop mosdns and v2ray-geodata packages that come with the source
+find ./ | grep Makefile | grep v2ray-geodata | xargs rm -f
+find ./ | grep Makefile | grep mosdns | xargs rm -f
+
+git clone https://github.com/sbwml/luci-app-mosdns -b v5 package/mosdns
+git clone https://github.com/sbwml/v2ray-geodata package/v2ray-geodata
+
+# requires golang 1.24.x or latest version
+rm -rf feeds/packages/lang/golang
+git clone https://github.com/sbwml/packages_lang_golang -b 24.x feeds/packages/lang/golang
+
+# 升级替换 smartdns
+WORKINGDIR="`pwd`/feeds/packages/net/smartdns"
+mkdir $WORKINGDIR -p
+rm $WORKINGDIR/* -fr
+wget https://github.com/pymumu/openwrt-smartdns/archive/master.zip -O $WORKINGDIR/master.zip
+unzip $WORKINGDIR/master.zip -d $WORKINGDIR
+mv $WORKINGDIR/openwrt-smartdns-master/* $WORKINGDIR/
+rmdir $WORKINGDIR/openwrt-smartdns-master
+rm $WORKINGDIR/master.zip
+
+LUCIBRANCH="master" #更换此变量
+WORKINGDIR="`pwd`/feeds/luci/applications/luci-app-smartdns"
+mkdir $WORKINGDIR -p
+rm $WORKINGDIR/* -fr
+wget https://github.com/pymumu/luci-app-smartdns/archive/${LUCIBRANCH}.zip -O $WORKINGDIR/${LUCIBRANCH}.zip
+unzip $WORKINGDIR/${LUCIBRANCH}.zip -d $WORKINGDIR
+mv $WORKINGDIR/luci-app-smartdns-${LUCIBRANCH}/* $WORKINGDIR/
+rmdir $WORKINGDIR/luci-app-smartdns-${LUCIBRANCH}
+rm $WORKINGDIR/${LUCIBRANCH}.zip
+
+# ---------------------------------------------------------
 # libxcrypt 专项救治 (极致精简版)
 # ---------------------------------------------------------
 XCRYPT_MK="feeds/packages/libs/libxcrypt/Makefile"
@@ -72,49 +165,24 @@ if [ -n "$OPENLIST2_DIR" ]; then
 fi
 
 #修复Rust编译失败
-RUST_FILE=$(find ../feeds/packages -path "*/lang/rust/Makefile" | head -n 1)
+RUST_FILE=$(find ../feeds/packages/ -maxdepth 3 -type f -wholename "*/rust/Makefile")
+if [ -f "$RUST_FILE" ]; then
+	echo " "
 
-if [ -n "$RUST_FILE" ] && [ -f "$RUST_FILE" ]; then
-    sed -i 's/ci-llvm=true/ci-llvm=false/g' "$RUST_FILE"
-    echo "Rust local LLVM build enabled!"
+	sed -i 's/ci-llvm=true/ci-llvm=false/g' $RUST_FILE
+
+	cd $PKG_PATH && echo "rust has been fixed!"
 fi
 
-# =========================================================
-# 修复 eBPF 与 Daed 的内核依赖冲突 (终极性能版)
-# =========================================================
-echo ">>> [Kernel] 正在修复 eBPF/Daed 编译依赖..."
-# 强行打通内核 BPF 与 TC (Traffic Control) 前置依赖
-for conf in target/linux/mediatek/filogic/config-*; do
-    # 【关键修正】：if 和 [ 之间必须有空格！
-    if [ -f "$conf" ]; then
-        echo ">>> 正在为 $conf 注入 eBPF/TC 核心与极致性能配置..."
-        
-        # --- 1. 流量控制 (TC) 前置大门 (缺失会导致 act_bpf 丢失) ---
-        echo "CONFIG_NET_SCHED=y" >> "$conf"
-        echo "CONFIG_NET_CLS=y" >> "$conf"
-        echo "CONFIG_NET_CLS_ACT=y" >> "$conf"
-        echo "CONFIG_NET_INGRESS=y" >> "$conf"
-        echo "CONFIG_NET_EGRESS=y" >> "$conf"
- 
-        # --- 2. BPF 核心与模块 ---
-        echo "CONFIG_NET_CLS_BPF=m" >> "$conf"
-        echo "CONFIG_NET_ACT_BPF=m" >> "$conf"
-        echo "CONFIG_BPF=y" >> "$conf"
-        echo "CONFIG_BPF_SYSCALL=y" >> "$conf"
-        echo "CONFIG_CGROUP_BPF=y" >> "$conf"
-
-        # --- 3. BPF 极致性能优化 (榨干路由器算力) ---
-        echo "CONFIG_BPF_JIT=y" >> "$conf"
-        echo "CONFIG_BPF_JIT_ALWAYS_ON=y" >> "$conf"
-        echo "CONFIG_BPF_STREAM_PARSER=y" >> "$conf"
-        echo "CONFIG_NET_SOCK_MSG=y" >> "$conf"
-        echo "CONFIG_XDP_SOCKETS=y" >> "$conf"
-        
-        echo "✅ eBPF 高性能与底层网络调度配置注入完成。"
-    fi
-done
-
-# 修改默认 IP (192.168.30.1)
+# ---------------------------------------------------------
+# 8. 系统收尾工作
+# ---------------------------------------------------------
 sed -i 's/192.168.6.1/192.168.30.1/g' package/base-files/files/bin/config_generate
 
-echo "✅ SSH2 配置完成。"
+if [ -f feeds.conf.default.bak ]; then
+    mv feeds.conf.default.bak feeds.conf.default
+fi
+
+rm -f feeds.conf
+
+echo "✅ 执行自定义优化脚本 (diy-part2.sh) 收尾完成。"
