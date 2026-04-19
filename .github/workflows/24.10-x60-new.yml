@@ -11,7 +11,6 @@ env:
   DEVICE_NAME: 24.10-x60-new
   # 源码仓库地址
   REPO_URL: https://github.com/padavanonly/immortalwrt-mt798x-6.6
-  # REPO_URL: https://github.com/Yuzhii0718/immortalwrt-mt798x-6.6-padavanonly
   # 源码分支
   REPO_BRANCH: openwrt-24.10-6.6
   # Feeds 配置文件名
